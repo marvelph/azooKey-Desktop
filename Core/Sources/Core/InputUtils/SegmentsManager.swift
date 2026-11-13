@@ -121,7 +121,7 @@ public final class SegmentsManager {
 
     private enum Operation: Sendable {
         case insert
-        case reconvert
+        case insertShowingReading
         case delete
         case editSegment
         case other
@@ -285,7 +285,7 @@ public final class SegmentsManager {
     public func insertAtCursorPosition(_ string: String, inputStyle: InputStyle, showReading: Bool = false) {
         self.lastInputStyle = inputStyle
         self.composingText.insertAtCursorPosition(string, inputStyle: inputStyle)
-        self.lastOperation = showReading ? .reconvert : .insert
+        self.lastOperation = showReading ? .insertShowingReading : .insert
         // ライブ変換がオフの場合は変換候補ウィンドウを出したい
         self.shouldShowCandidateWindow = !self.liveConversionEnabled
         self.updateRawCandidate()
@@ -1012,7 +1012,7 @@ public final class SegmentsManager {
         case .none, .attachDiacritic:
             return MarkedText(text: [], selectionRange: .notFound)
         case .composing:
-            let text = if self.lastOperation == .delete || self.lastOperation == .reconvert {
+            let text = if self.lastOperation == .delete || self.lastOperation == .insertShowingReading {
                 self.composingText.convertTarget
             } else if self.liveConversionEnabled,
                       self.composingText.convertTarget.count > 1,

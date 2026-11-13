@@ -6,7 +6,7 @@ public enum ClientAction {
     case showCandidateWindow
     case hideCandidateWindow
     case appendToMarkedText(String)
-    case appendDirectlyToMarkedText(String)
+    case appendDirectlyToMarkedText(String, showReading: Bool = false)
     case appendPieceToMarkedText([InputPiece])
 
     /// Marked Textを経由せずにインサートするコマンド。InputStateがnoneの場合のみ有効

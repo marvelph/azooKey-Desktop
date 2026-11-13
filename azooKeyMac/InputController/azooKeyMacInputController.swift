@@ -312,7 +312,18 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             return true
         }
 
-        let userAction = UserAction.getUserAction(eventCore: event.keyEventCore, inputLanguage: inputLanguage)
+        let eventCore = event.keyEventCore
+        if self.inputLanguage == .japanese,
+           self.inputState == .none || self.inputState == .composing,
+           let text = eventCore.unmodifiedKeypadText {
+            if self.inputState == .none {
+                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                return true
+            }
+            return handleClientAction(.appendDirectlyToMarkedText(text, showReading: true), clientActionCallback: .fallthrough, client: client)
+        }
+
+        let userAction = UserAction.getUserAction(eventCore: eventCore, inputLanguage: inputLanguage)
 
         if self.inputState == .composing, eventModifiers == [.control],
            case .function(let function) = userAction, !self.segmentsManager.isEmpty {
@@ -443,8 +454,8 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             // 英語モードの場合は.directでローマ字変換せずそのまま入力
             let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
             self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
-        case .appendDirectlyToMarkedText(let string):
-            self.segmentsManager.insertAtCursorPosition(string, inputStyle: .direct)
+        case .appendDirectlyToMarkedText(let string, let showReading):
+            self.segmentsManager.insertAtCursorPosition(string, inputStyle: .direct, showReading: showReading)
         case .insertWithoutMarkedText(let string):
             client.insertText(string, replacementRange: NSRange(location: NSNotFound, length: 0))
         case .editSegment(let count):
