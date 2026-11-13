@@ -7,6 +7,7 @@ import KanaKanjiConverterModuleWithDefaultDictionary
 class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // swiftlint:disable:this type_name
     var segmentsManager: SegmentsManager
     private(set) var inputState: InputState = .none
+    private var conversionPreview: Candidate?
     private var inputLanguage: InputLanguage = .japanese
     var liveConversionEnabled: Bool {
         Config.LiveConversion().value
@@ -179,6 +180,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 
     @MainActor
     override func deactivateServer(_ sender: Any!) {
+        self.conversionPreview = nil
         self.segmentsManager.deactivate()
         self.candidatesWindow.orderOut(nil)
         self.predictionWindow.orderOut(nil)
@@ -198,9 +200,13 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         if self.segmentsManager.isEmpty {
             return
         }
-        let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
-        if let client = sender as? IMKTextInput {
-            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        if let candidate = self.conversionPreview, let client = sender as? IMKTextInput {
+            self.conversionPreview = nil
+            self.submitCandidate(candidate, to: client)
+        } else {
+            self.conversionPreview = nil
+            let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
+            (sender as? IMKTextInput)?.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         self.inputState = .none
         self.refreshMarkedText()
@@ -224,6 +230,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
                 // メニューバーやshortcut経由の切り替えに対応する。
                 // composing中でも英数キーMarkedTextを保ったまま英語入力へ移る。
                 if self.inputLanguage == .japanese {
+                    if self.conversionPreview != nil {
+                        self.conversionPreview = nil
+                        self.refreshMarkedText()
+                    }
                     self.inputLanguage = .english
                     self.segmentsManager.stopJapaneseInput()
                     self.refreshCandidateWindow()
@@ -297,6 +307,12 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         }
 
         let userAction = UserAction.getUserAction(eventCore: event.keyEventCore, inputLanguage: inputLanguage)
+
+        if self.inputState == .composing, eventModifiers == [.control],
+           case .function(let function) = userAction, !self.segmentsManager.isEmpty {
+            self.conversionPreview = self.modifiedCandidate(for: function)
+            return self.handleClientAction(.consume, clientActionCallback: .fallthrough, client: client)
+        }
 
         // 英数キー（keyCode 102）の処理
         if event.keyCode == 102 {
@@ -391,7 +407,17 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     // この種のコードは複雑にしかならないので、lintを無効にする
     // swiftlint:disable:next cyclomatic_complexity
     @MainActor func handleClientAction(_ clientAction: ClientAction, clientActionCallback: ClientActionCallback, client: IMKTextInput) -> Bool {
-        // return only false
+        let preview = self.conversionPreview
+        switch clientAction {
+        case .consume, .fallthrough:
+            break
+        case .stopComposition where preview != nil:
+            self.conversionPreview = nil
+            return self.handleClientAction(.consume, clientActionCallback: .fallthrough, client: client)
+        default:
+            self.conversionPreview = nil
+        }
+
         switch clientAction {
         case .showCandidateWindow:
             self.segmentsManager.requestSetCandidateWindowState(visible: true)
@@ -418,8 +444,12 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         case .editSegment(let count):
             self.segmentsManager.editSegment(count: count)
         case .commitMarkedText:
-            let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
-            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            if let preview {
+                self.submitCandidate(preview, to: client)
+            } else {
+                let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
+                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
         case .commitMarkedTextAndAppendToMarkedText(let string):
             let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -446,25 +476,15 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             self.submitSelectedCandidate()
             self.segmentsManager.requestResettingSelection()
         case .submitHiraganaCandidate:
-            self.submitCandidate(self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) {
-                $0.toHiragana()
-            })
+            self.submitCandidate(self.modifiedCandidate(for: .six))
         case .submitKatakanaCandidate:
-            self.submitCandidate(self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) {
-                $0.toKatakana()
-            })
+            self.submitCandidate(self.modifiedCandidate(for: .seven))
         case .submitHankakuKatakanaCandidate:
-            self.submitCandidate(self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) {
-                $0.toKatakana().applyingTransform(.fullwidthToHalfwidth, reverse: false)!
-            })
+            self.submitCandidate(self.modifiedCandidate(for: .eight))
         case .submitFullWidthRomanCandidate:
-            self.submitCandidate(self.segmentsManager.getModifiedRomanCandidate {
-                $0.applyingTransform(.fullwidthToHalfwidth, reverse: true)!
-            })
+            self.submitCandidate(self.modifiedCandidate(for: .nine))
         case .submitHalfWidthRomanCandidate:
-            self.submitCandidate(self.segmentsManager.getModifiedRomanCandidate {
-                $0.applyingTransform(.fullwidthToHalfwidth, reverse: false)!
-            })
+            self.submitCandidate(self.modifiedCandidate(for: .ten))
         case .enableDebugWindow:
             self.segmentsManager.requestDebugWindowMode(enabled: true)
         case .disableDebugWindow:
@@ -575,7 +595,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     }
 
     func refreshCandidateWindow() {
-        switch self.segmentsManager.getCurrentCandidateWindow(inputState: self.inputState) {
+        let window: SegmentsManager.CandidateWindow = self.conversionPreview == nil
+            ? self.segmentsManager.getCurrentCandidateWindow(inputState: self.inputState)
+            : .hidden
+        switch window {
         case .selecting(let candidates, let selectionIndex):
             var rect: NSRect = .zero
             self.client().attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
@@ -606,7 +629,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     }
 
     func refreshPredictionWindow() {
-        guard self.inputState == .composing else {
+        guard self.inputState == .composing, self.conversionPreview == nil else {
             self.hidePredictionWindow()
             return
         }
@@ -773,6 +796,14 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             forStyle: kTSMHiliteConvertedText,
             at: NSRange(location: NSNotFound, length: 0)
         ) as? [NSAttributedString.Key: Any]
+        if let preview = self.conversionPreview {
+            self.client()?.setMarkedText(
+                NSAttributedString(string: preview.text, attributes: highlight),
+                selectionRange: NSRange(location: 0, length: preview.text.utf16.count),
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+            return
+        }
         let text = NSMutableAttributedString(string: "")
         let currentMarkedText = self.segmentsManager.getCurrentMarkedText(inputState: self.inputState)
         for part in currentMarkedText where !part.content.isEmpty {
@@ -796,14 +827,40 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     }
 
     @MainActor
+    private func modifiedCandidate(for function: UserAction.Function) -> Candidate {
+        switch function {
+        case .six:
+            self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) { $0.toHiragana() }
+        case .seven:
+            self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) { $0.toKatakana() }
+        case .eight:
+            self.segmentsManager.getModifiedRubyCandidate(inputState: self.inputState) {
+                let katakana = $0.toKatakana()
+                return katakana.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? katakana
+            }
+        case .nine:
+            self.segmentsManager.getModifiedRomanCandidate {
+                $0.applyingTransform(.fullwidthToHalfwidth, reverse: true) ?? $0
+            }
+        case .ten:
+            self.segmentsManager.getModifiedRomanCandidate {
+                $0.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? $0
+            }
+        }
+    }
+
+    @MainActor
     func submitCandidate(_ candidate: Candidate) {
         if let client = self.client() {
-            // インサートを行う前にコンテキストを取得する
-            let cleanLeftSideContext = self.segmentsManager.getCleanLeftSideContext(maxCount: 30)
-            client.insertText(candidate.text, replacementRange: NSRange(location: NSNotFound, length: 0))
-            // アプリケーションサポートのディレクトリを準備しておく
-            self.segmentsManager.prefixCandidateCommited(candidate, leftSideContext: cleanLeftSideContext ?? "")
+            self.submitCandidate(candidate, to: client)
         }
+    }
+
+    @MainActor
+    private func submitCandidate(_ candidate: Candidate, to client: IMKTextInput) {
+        let cleanLeftSideContext = self.segmentsManager.getCleanLeftSideContext(maxCount: 30)
+        client.insertText(candidate.text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        self.segmentsManager.prefixCandidateCommited(candidate, leftSideContext: cleanLeftSideContext ?? "")
     }
 
     @MainActor
