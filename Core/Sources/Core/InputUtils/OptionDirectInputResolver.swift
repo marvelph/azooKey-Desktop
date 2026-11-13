@@ -8,7 +8,7 @@ public enum OptionDirectInputResolver {
         inputState: InputState,
         typeBackSlash: Bool
     ) -> String? {
-        guard inputLanguage == .japanese, inputState == .none else {
+        guard inputLanguage == .japanese, inputState == .none || inputState == .composing else {
             return nil
         }
         guard modifierFlags == [.option] || modifierFlags == [.option, .shift] else {

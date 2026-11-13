@@ -49,6 +49,17 @@ import Testing
     ) == "＼")
 }
 
+@Test(arguments: [("a", "ａ"), ("3", "３")])
+func testOptionDirectInputResolverReturnsFullWidthTextWhileComposing(characters: String, expected: String) {
+    #expect(OptionDirectInputResolver.resolve(
+        characters: characters,
+        modifierFlags: [.option],
+        inputLanguage: .japanese,
+        inputState: .composing,
+        typeBackSlash: false
+    ) == expected)
+}
+
 @Test func testOptionDirectInputResolverRejectsUnsupportedContext() async throws {
     let option: KeyEventCore.ModifierFlag = [.option]
 
@@ -70,7 +81,7 @@ import Testing
         characters: "a",
         modifierFlags: option,
         inputLanguage: .japanese,
-        inputState: .composing,
+        inputState: .selecting,
         typeBackSlash: false
     ) == nil)
     #expect(OptionDirectInputResolver.resolve(

@@ -289,6 +289,9 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             inputState: inputState,
             typeBackSlash: Config.TypeBackSlash().value
            ) {
+            if inputState == .composing {
+                return handleClientAction(.appendDirectlyToMarkedText(text), clientActionCallback: .fallthrough, client: client)
+            }
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
             return true
         }
@@ -408,6 +411,8 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             // 英語モードの場合は.directでローマ字変換せずそのまま入力
             let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
             self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
+        case .appendDirectlyToMarkedText(let string):
+            self.segmentsManager.insertAtCursorPosition(string, inputStyle: .direct)
         case .insertWithoutMarkedText(let string):
             client.insertText(string, replacementRange: NSRange(location: NSNotFound, length: 0))
         case .editSegment(let count):
@@ -562,10 +567,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         client.overrideKeyboard(withKeyboardNamed: Config.KeyboardLayout().value.layoutIdentifier)
         switch language {
         case .english:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Roman")
+            client.selectMode("org.programmershigh.inputmethod.azooKeyMac.Roman")
             self.segmentsManager.stopJapaneseInput()
         case .japanese:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Japanese")
+            client.selectMode("org.programmershigh.inputmethod.azooKeyMac.Japanese")
         }
     }
 
