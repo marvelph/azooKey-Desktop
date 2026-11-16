@@ -1,5 +1,6 @@
 import Cocoa
 import Core
+import CoreServices
 import KanaKanjiConverterModule
 
 protocol CandidatesViewControllerDelegate: AnyObject {
@@ -10,6 +11,29 @@ protocol CandidatesViewControllerDelegate: AnyObject {
 class CandidatesViewController: BaseCandidateViewController {
     weak var delegate: (any CandidatesViewControllerDelegate)?
     private var showedRows: ClosedRange = 0...8
+    private let dictionaryDefinitions: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 256
+        return cache
+    }()
+    private let dictionaryQueue = DispatchQueue(label: "azooKey.dictionaryLookup", qos: .utility)
+    private var pendingDictionaryLookups: Set<String> = []
+    private var dictionaryHoverTimer: Timer?
+    private weak var hoveredDictionaryIcon: NSImageView?
+    private var displayedDefinition: String?
+    private lazy var dictionaryTooltipLabel = NSTextField(wrappingLabelWithString: "")
+    private lazy var dictionaryTooltipWindow: NSPanel = {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.backgroundColor = .windowBackgroundColor
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.level = .popUpMenu
+        let content = NSView()
+        content.addSubview(self.dictionaryTooltipLabel)
+        panel.contentView = content
+        return panel
+    }()
     var showCandidateIndex = false
 
     override func updateCandidatePresentations(_ candidates: [CandidatePresentation], selectionIndex: Int?, cursorLocation: CGPoint) {
@@ -19,6 +43,78 @@ class CandidatesViewController: BaseCandidateViewController {
             selectionIndex: selectionIndex,
             cursorLocation: cursorLocation
         )
+        if !candidates.isEmpty, self.dictionaryHoverTimer == nil {
+            let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        timer.invalidate()
+                        return
+                    }
+                    self.updateDictionaryHover()
+                }
+            }
+            self.dictionaryHoverTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func updateDictionaryHover() {
+        guard let window = self.view.window, window.isVisible else {
+            self.stopDictionaryHover()
+            return
+        }
+        let pointer = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let tablePoint = self.tableView.convert(pointer, from: nil)
+        let row = self.tableView.row(at: tablePoint)
+        guard self.tableView.visibleRect.contains(tablePoint), row >= 0,
+              let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? CandidateTableCellView,
+              let definition = cell.dictionaryDefinition,
+              cell.dictionaryIcon.bounds.contains(cell.dictionaryIcon.convert(pointer, from: nil)) else {
+            self.hideDictionaryTooltip()
+            return
+        }
+        guard let screen = window.screen else { return }
+        let icon = cell.dictionaryIcon
+        let anchor = window.convertToScreen(icon.convert(icon.bounds, to: nil))
+        let label = self.dictionaryTooltipLabel
+        let panel = self.dictionaryTooltipWindow
+        if self.hoveredDictionaryIcon !== icon || self.displayedDefinition != definition {
+            self.hoveredDictionaryIcon = icon
+            self.displayedDefinition = definition
+            label.stringValue = definition
+            let textWidth: CGFloat = 300
+            let textSize = label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: textWidth, height: 1000)) ?? .zero
+            label.frame = NSRect(x: 10, y: 8, width: textWidth, height: ceil(textSize.height))
+            panel.setContentSize(NSSize(width: textWidth + 20, height: label.frame.height + 16))
+        }
+        let bounds = screen.visibleFrame
+        let size = panel.frame.size
+        let x = anchor.maxX + 6 + size.width <= bounds.maxX ? anchor.maxX + 6 : anchor.minX - size.width - 6
+        let y = anchor.midY - size.height / 2
+        let origin = NSPoint(x: max(bounds.minX, x), y: max(bounds.minY, min(y, bounds.maxY - size.height)))
+        if panel.frame.origin != origin {
+            panel.setFrameOrigin(origin)
+        }
+        if panel.parent == nil {
+            window.addChildWindow(panel, ordered: .above)
+            panel.orderFrontRegardless()
+        }
+    }
+
+    private func hideDictionaryTooltip() {
+        guard self.displayedDefinition != nil else { return }
+        self.displayedDefinition = nil
+        self.hoveredDictionaryIcon = nil
+        if let parent = self.dictionaryTooltipWindow.parent {
+            parent.removeChildWindow(self.dictionaryTooltipWindow)
+        }
+        self.dictionaryTooltipWindow.orderOut(nil)
+    }
+
+    private func stopDictionaryHover() {
+        self.dictionaryHoverTimer?.invalidate()
+        self.dictionaryHoverTimer = nil
+        self.hideDictionaryTooltip()
     }
 
     override internal func updateSelectionCallback(_ row: Int) {
@@ -78,6 +174,32 @@ class CandidatesViewController: BaseCandidateViewController {
             cell.showCandidateAnnotationTextField(false)
             cell.candidateAnnotationTextField.stringValue = ""
         }
+        let definition = self.dictionaryDefinition(for: candidate.text)
+        cell.showDictionaryDefinition(definition, isSelected: self.currentSelectedRow == row)
+    }
+
+    private func dictionaryDefinition(for text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        let key = text as NSString
+        if let cached = self.dictionaryDefinitions.object(forKey: key) {
+            return cached.length == 0 ? nil : cached as String
+        }
+        guard self.pendingDictionaryLookups.insert(text).inserted else { return nil }
+        self.dictionaryQueue.async { [weak self] in
+            let range = CFRange(location: 0, length: text.utf16.count)
+            let definition = DCSCopyTextDefinition(nil, text as CFString, range)?.takeRetainedValue() as String?
+            let trimmed = definition?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let tooltip = trimmed.count > 500 ? String(trimmed.prefix(500)) + "…" : trimmed
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingDictionaryLookups.remove(text)
+                self.dictionaryDefinitions.setObject(tooltip as NSString, forKey: text as NSString)
+                if self.view.window?.isVisible == true {
+                    self.updateVisibleRows()
+                }
+            }
+        }
+        return nil
     }
 
     func getNumberCandidate(num: Int) -> Int {
@@ -86,6 +208,7 @@ class CandidatesViewController: BaseCandidateViewController {
     }
 
     func hide() {
+        self.stopDictionaryHover()
         self.currentSelectedRow = -1
         self.showedRows = 0...8
     }
@@ -96,10 +219,11 @@ class CandidatesViewController: BaseCandidateViewController {
 
     override func getWindowWidth(maxContentWidth: CGFloat) -> CGFloat {
         let hasAnnotation = self.candidates.contains { $0.displayContext.annotationText != nil }
+        let extraWidth = CandidateTableCellView.dictionaryIconSpace + (hasAnnotation ? 56 : 0)
         if self.showCandidateIndex {
-            return maxContentWidth + 48 + (hasAnnotation ? 56 : 0)
+            return maxContentWidth + 48 + extraWidth
         } else {
-            return maxContentWidth + 20 + (hasAnnotation ? 56 : 0)
+            return maxContentWidth + 20 + extraWidth
         }
     }
 }

@@ -9,8 +9,11 @@ class NonClickableTableView: NSTableView {
 }
 
 class CandidateTableCellView: NSTableCellView {
+    static let dictionaryIconSpace: CGFloat = 22
     let candidateTextField: NSTextField
     let candidateAnnotationTextField: NSTextField
+    private(set) var dictionaryDefinition: String?
+    let dictionaryIcon = NSImageView()
     private lazy var candidateTextFieldLeadingConstraint: NSLayoutConstraint = {
         self.candidateTextField.leadingAnchor.constraint(equalTo: self.leadingAnchor)
     }()
@@ -68,6 +71,26 @@ class CandidateTableCellView: NSTableCellView {
         self.candidateAnnotationTextField.backgroundColor = .clear
 
         self.showCandidateAnnotationTextField(false)
+    }
+
+    func showDictionaryDefinition(_ definition: String?, isSelected: Bool) {
+        if definition != nil, self.dictionaryIcon.superview == nil {
+            self.dictionaryIcon.image = NSImage(systemSymbolName: "book", accessibilityDescription: "辞書")
+            self.dictionaryIcon.translatesAutoresizingMaskIntoConstraints = false
+            self.addSubview(self.dictionaryIcon)
+            NSLayoutConstraint.activate([
+                self.dictionaryIcon.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+                self.dictionaryIcon.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+                self.dictionaryIcon.widthAnchor.constraint(equalToConstant: 14),
+                self.dictionaryIcon.heightAnchor.constraint(equalToConstant: 14)
+            ])
+        }
+        self.dictionaryIcon.isHidden = definition == nil
+        self.dictionaryDefinition = definition
+        self.dictionaryIcon.contentTintColor = isSelected ? .white : .secondaryLabelColor
+        let inset = definition == nil ? 0 : -Self.dictionaryIconSpace
+        self.candidateTextFieldTrailingToContainerConstraint.constant = inset
+        self.candidateAnnotationTextFieldTrailingConstraint.constant = inset
     }
 
     required init?(coder: NSCoder) {
