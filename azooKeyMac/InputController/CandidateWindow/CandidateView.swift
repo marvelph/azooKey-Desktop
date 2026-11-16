@@ -18,8 +18,8 @@ class CandidatesViewController: BaseCandidateViewController {
     }()
     private let dictionaryQueue = DispatchQueue(label: "azooKey.dictionaryLookup", qos: .utility)
     private var pendingDictionaryLookups: Set<String> = []
-    private var dictionaryHoverTimer: Timer?
-    private weak var hoveredDictionaryIcon: NSImageView?
+    private var dictionarySelectionTimer: Timer?
+    private var dictionarySelection: (row: Int, text: String)?
     private var displayedDefinition: String?
     private lazy var dictionaryTooltipLabel = NSTextField(wrappingLabelWithString: "")
     private lazy var dictionaryTooltipWindow: NSPanel = {
@@ -43,43 +43,50 @@ class CandidatesViewController: BaseCandidateViewController {
             selectionIndex: selectionIndex,
             cursorLocation: cursorLocation
         )
-        if !candidates.isEmpty, self.dictionaryHoverTimer == nil {
-            let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] timer in
-                MainActor.assumeIsolated {
-                    guard let self else {
-                        timer.invalidate()
-                        return
-                    }
-                    self.updateDictionaryHover()
-                }
-            }
-            self.dictionaryHoverTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
+        if !self.showCandidateIndex || selectionIndex == nil || candidates.isEmpty {
+            self.cancelDictionarySelection()
+        } else {
+            self.updateDictionaryTooltip()
         }
     }
 
-    private func updateDictionaryHover() {
-        guard let window = self.view.window, window.isVisible else {
-            self.stopDictionaryHover()
+    private func scheduleDictionarySelection(for row: Int) {
+        guard self.showCandidateIndex, self.candidates.indices.contains(row) else {
+            self.cancelDictionarySelection()
             return
         }
-        let pointer = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-        let tablePoint = self.tableView.convert(pointer, from: nil)
-        let row = self.tableView.row(at: tablePoint)
-        guard self.tableView.visibleRect.contains(tablePoint), row >= 0,
-              let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? CandidateTableCellView,
-              let definition = cell.dictionaryDefinition,
-              cell.dictionaryIcon.bounds.contains(cell.dictionaryIcon.convert(pointer, from: nil)) else {
+        let text = self.candidates[row].candidate.text
+        if self.dictionarySelection?.row == row, self.dictionarySelection?.text == text {
+            return
+        }
+        self.cancelDictionarySelection()
+        self.dictionarySelection = (row, text)
+        let timer = Timer(timeInterval: 0.6, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.dictionarySelectionTimer = nil
+                self?.updateDictionaryTooltip()
+            }
+        }
+        self.dictionarySelectionTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func updateDictionaryTooltip() {
+        guard self.dictionarySelectionTimer == nil,
+              let selection = self.dictionarySelection,
+              selection.row == self.currentSelectedRow,
+              self.candidates.indices.contains(selection.row),
+              self.candidates[selection.row].candidate.text == selection.text,
+              let window = self.view.window, window.isVisible, let screen = window.screen,
+              let definition = self.dictionaryDefinition(for: selection.text) else {
             self.hideDictionaryTooltip()
             return
         }
-        guard let screen = window.screen else { return }
-        let icon = cell.dictionaryIcon
-        let anchor = window.convertToScreen(icon.convert(icon.bounds, to: nil))
+        let rowFrame = self.tableView.rect(ofRow: selection.row)
+        let anchor = window.convertToScreen(self.tableView.convert(rowFrame, to: nil))
         let label = self.dictionaryTooltipLabel
         let panel = self.dictionaryTooltipWindow
-        if self.hoveredDictionaryIcon !== icon || self.displayedDefinition != definition {
-            self.hoveredDictionaryIcon = icon
+        if self.displayedDefinition != definition {
             self.displayedDefinition = definition
             label.stringValue = definition
             let textWidth: CGFloat = 300
@@ -89,7 +96,8 @@ class CandidatesViewController: BaseCandidateViewController {
         }
         let bounds = screen.visibleFrame
         let size = panel.frame.size
-        let x = anchor.maxX + 6 + size.width <= bounds.maxX ? anchor.maxX + 6 : anchor.minX - size.width - 6
+        let x = window.frame.maxX + 6 + size.width <= bounds.maxX
+            ? window.frame.maxX + 6 : window.frame.minX - size.width - 6
         let y = anchor.midY - size.height / 2
         let origin = NSPoint(x: max(bounds.minX, x), y: max(bounds.minY, min(y, bounds.maxY - size.height)))
         if panel.frame.origin != origin {
@@ -104,21 +112,22 @@ class CandidatesViewController: BaseCandidateViewController {
     private func hideDictionaryTooltip() {
         guard self.displayedDefinition != nil else { return }
         self.displayedDefinition = nil
-        self.hoveredDictionaryIcon = nil
         if let parent = self.dictionaryTooltipWindow.parent {
             parent.removeChildWindow(self.dictionaryTooltipWindow)
         }
         self.dictionaryTooltipWindow.orderOut(nil)
     }
 
-    private func stopDictionaryHover() {
-        self.dictionaryHoverTimer?.invalidate()
-        self.dictionaryHoverTimer = nil
+    private func cancelDictionarySelection() {
+        self.dictionarySelectionTimer?.invalidate()
+        self.dictionarySelectionTimer = nil
+        self.dictionarySelection = nil
         self.hideDictionaryTooltip()
     }
 
     override internal func updateSelectionCallback(_ row: Int) {
         delegate?.candidateSelectionChanged(row)
+        self.scheduleDictionarySelection(for: row)
 
         if !self.showedRows.contains(row) {
             if row < self.showedRows.lowerBound {
@@ -196,6 +205,9 @@ class CandidatesViewController: BaseCandidateViewController {
                 self.dictionaryDefinitions.setObject(tooltip as NSString, forKey: text as NSString)
                 if self.view.window?.isVisible == true {
                     self.updateVisibleRows()
+                    if self.dictionarySelection?.text == text {
+                        self.updateDictionaryTooltip()
+                    }
                 }
             }
         }
@@ -208,7 +220,7 @@ class CandidatesViewController: BaseCandidateViewController {
     }
 
     func hide() {
-        self.stopDictionaryHover()
+        self.cancelDictionarySelection()
         self.currentSelectedRow = -1
         self.showedRows = 0...8
     }
