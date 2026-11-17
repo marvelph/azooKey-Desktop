@@ -187,6 +187,8 @@ public enum InputState: Sendable, Hashable {
                     return (.editSegment(1), .transition(.selecting))
                 } else if direction == .left && event.modifierFlags.contains(.shift) {
                     return (.editSegment(-1), .transition(.selecting))
+                } else if liveConversionEnabled && (direction == .left || direction == .right) {
+                    return (.focusLiveConversionSegment(direction == .left ? -1 : 1), .fallthrough)
                 } else {
                     // ナビゲーションはハンドルしてしまう
                     return (.consume, .fallthrough)
@@ -248,6 +250,8 @@ public enum InputState: Sendable, Hashable {
                     return (.editSegment(1), .transition(.selecting))
                 } else if direction == .left && event.modifierFlags.contains(.shift) {
                     return (.editSegment(-1), .transition(.selecting))
+                } else if direction == .left || direction == .right {
+                    return (.focusLiveConversionSegment(direction == .left ? -1 : 1), .fallthrough)
                 } else {
                     // ナビゲーションはハンドルしてしまう
                     return (.consume, .fallthrough)

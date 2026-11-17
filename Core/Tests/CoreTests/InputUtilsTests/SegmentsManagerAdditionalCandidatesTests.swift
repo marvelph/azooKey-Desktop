@@ -13,6 +13,66 @@ private func makeSegmentsManager(liveConversion: Bool? = nil) -> SegmentsManager
 }
 
 @MainActor
+@Test func explicitConversionStartsWithTheFirstClauseFocused() throws {
+    let manager = makeSegmentsManager(liveConversion: false)
+    manager.insertAtCursorPosition("きょうはとうきょうへいきます", inputStyle: .direct)
+    manager.insertCompositionSeparator(inputStyle: .direct)
+    let displayed = manager.getCurrentMarkedText(inputState: .previewing).map(\.content).joined()
+
+    manager.focusExplicitConversionPreview()
+    let initial = manager.getCurrentMarkedText(inputState: .previewing)
+    try #require(initial.first { $0.focus == .focused }?.content == "今日は")
+    #expect(initial.map(\.content).joined() == displayed)
+    try #require(manager.focusLiveConversionSegment(1))
+    let next = manager.getCurrentMarkedText(inputState: .previewing)
+    #expect(next.first { $0.focus == .focused }?.content == "東京へ")
+    #expect(next.map(\.content).joined() == displayed)
+}
+
+@MainActor
+@Test func movingRightAfterResizingFocusesIndividualTrailingPreviewClauses() {
+    let manager = makeSegmentsManager(liveConversion: true)
+    let suffix = "きょうはとうきょうへいきます"
+    manager.insertAtCursorPosition("あしたは" + suffix, inputStyle: .direct)
+    manager.editSegment(count: -suffix.count)
+    let original = manager.getCurrentMarkedText(inputState: .selecting).map(\.content).joined()
+
+    manager.moveConversionSegment(1)
+    let first = manager.getCurrentMarkedText(inputState: .selecting)
+    #expect(first.first { $0.focus == .focused }?.content == "今日は")
+    #expect(first.map(\.content).joined() == original)
+
+    manager.moveConversionSegment(1)
+    let second = manager.getCurrentMarkedText(inputState: .selecting)
+    #expect(second.first { $0.focus == .focused }?.content == "東京へ")
+    #expect(second.map(\.content).joined() == original)
+}
+
+@MainActor
+@Test(arguments: [InputStyle.direct, .roman2kana])
+func navigatingLiveConversionPreservesTheDisplayedCandidate(inputStyle: InputStyle) throws {
+    let manager = makeSegmentsManager(liveConversion: true)
+    let input = inputStyle == .direct ? "きょうはとうきょうへいきます" : "kyouhatoukyouheikimasu"
+    manager.insertAtCursorPosition(input, inputStyle: inputStyle)
+    let displayed = manager.getCurrentMarkedText(inputState: .composing).map(\.content).joined()
+    try #require(manager.focusLiveConversionSegment(-1))
+    let last = manager.getCurrentMarkedText(inputState: .previewing)
+    #expect(last.map(\.content).joined() == displayed)
+    #expect(last.first { $0.focus == .focused }?.content == "行きます")
+    try #require(manager.focusLiveConversionSegment(-1))
+    let previous = manager.getCurrentMarkedText(inputState: .previewing)
+    #expect(previous.map(\.content).joined() == displayed)
+    #expect(previous.first { $0.focus == .focused }?.content != last.first { $0.focus == .focused }?.content)
+    try #require(manager.focusLiveConversionSegment(1))
+    #expect(manager.getCurrentMarkedText(inputState: .previewing) == last)
+    if case .hidden = manager.getCurrentCandidateWindow(inputState: .previewing) {
+    } else {
+        Issue.record("Moving focus should keep the candidate window closed")
+    }
+    #expect(manager.commitMarkedText(inputState: .previewing) == displayed)
+}
+
+@MainActor
 @Test func restoringReadingRejoinsRetainedRomanInputAndSuppressesLiveConversion() {
     let manager = makeSegmentsManager(liveConversion: true)
     manager.insertAtCursorPosition("kyouhatoukyou", inputStyle: .roman2kana)

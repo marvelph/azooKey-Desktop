@@ -5,6 +5,7 @@ public enum ClientAction {
     case `fallthrough`
     case showCandidateWindow
     case restoreReadingOrCancelComposition
+    case focusLiveConversionSegment(Int)
     case appendToMarkedText(String)
     case appendDirectlyToMarkedText(String, showReading: Bool = false)
     case appendPieceToMarkedText([InputPiece])

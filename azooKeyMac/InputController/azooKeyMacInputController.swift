@@ -297,16 +297,17 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             return self.reconvertSelection(in: client)
         }
         let charactersForOptionDirectInput = event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.option))
+        let textInputState: InputState = self.segmentsManager.isFocusingConversionPreview ? .composing : self.inputState
         if Config.OptionDirectFullWidthInput().value,
            let text = OptionDirectInputResolver.resolve(
             characters: charactersForOptionDirectInput,
             modifierFlags: eventModifiers,
             inputLanguage: inputLanguage,
-            inputState: inputState,
+            inputState: textInputState,
             typeBackSlash: Config.TypeBackSlash().value
            ) {
-            if inputState == .composing {
-                return handleClientAction(.appendDirectlyToMarkedText(text), clientActionCallback: .fallthrough, client: client)
+            if textInputState == .composing {
+                return handleClientAction(.appendDirectlyToMarkedText(text), clientActionCallback: .transition(.composing), client: client)
             }
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
             return true
@@ -314,13 +315,13 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 
         let eventCore = event.keyEventCore
         if self.inputLanguage == .japanese,
-           self.inputState == .none || self.inputState == .composing,
+           textInputState == .none || textInputState == .composing,
            let text = eventCore.unmodifiedKeypadText {
             if self.inputState == .none {
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
                 return true
             }
-            return handleClientAction(.appendDirectlyToMarkedText(text, showReading: true), clientActionCallback: .fallthrough, client: client)
+            return handleClientAction(.appendDirectlyToMarkedText(text, showReading: true), clientActionCallback: .transition(.composing), client: client)
         }
 
         let userAction = UserAction.getUserAction(eventCore: eventCore, inputLanguage: inputLanguage)
@@ -446,9 +447,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             }
         case .enterFirstCandidatePreviewMode:
             self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: false)
+            self.segmentsManager.focusExplicitConversionPreview()
             self.segmentsManager.requestSetCandidateWindowState(visible: false)
         case .enterCandidateSelectionMode:
-            if !self.segmentsManager.reopenConversionSegmentIfNeeded() {
+            if !self.segmentsManager.openFocusedConversionCandidates(), !self.segmentsManager.reopenConversionSegmentIfNeeded() {
                 self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: true)
                 self.segmentsManager.update(requestRichCandidates: true)
             }
@@ -466,6 +468,9 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
                 self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
             }
         case .appendDirectlyToMarkedText(let string, let showReading):
+            if self.segmentsManager.isFocusingConversionPreview {
+                self.segmentsManager.retainConversionPreview()
+            }
             self.segmentsManager.insertAtCursorPosition(string, inputStyle: .direct, showReading: showReading)
         case .insertWithoutMarkedText(let string):
             client.insertText(string, replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -488,6 +493,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             self.segmentsManager.retainVisibleConversion()
         case .moveConversionSegment(let direction):
             self.segmentsManager.moveConversionSegment(direction)
+        case .focusLiveConversionSegment(let direction):
+            if self.segmentsManager.focusLiveConversionSegment(direction) {
+                self.inputState = .previewing
+            }
         case .retainSelectedCandidateAndAppend(let pieces):
             self.segmentsManager.retainVisibleConversion()
             let style: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
