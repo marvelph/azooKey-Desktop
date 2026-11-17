@@ -3,13 +3,49 @@ import Foundation
 import KanaKanjiConverterModuleWithDefaultDictionary
 import Testing
 
-private func makeSegmentsManager() -> SegmentsManager {
+private func makeSegmentsManager(liveConversion: Bool? = nil) -> SegmentsManager {
     SegmentsManager(
         kanaKanjiConverter: .withDefaultDictionary(),
         applicationDirectoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
         containerURL: nil,
-        context: .init(useZenzai: false)
+        context: .init(useZenzai: false, liveConversion: liveConversion)
     )
+}
+
+@MainActor
+@Test(arguments: [true, false])
+func resizedRangePreviewsTrailingConversionWhenLiveConversionIsEnabled(liveConversion: Bool) {
+    let manager = makeSegmentsManager(liveConversion: liveConversion)
+    manager.insertAtCursorPosition("きょうはとうきょう", inputStyle: .direct)
+    manager.editSegment(count: -5)
+    let marked = manager.getCurrentMarkedText(inputState: .selecting).map(\.content)
+    #expect(marked.last == (liveConversion ? "東京" : "とうきょう"))
+
+    manager.retainVisibleConversion()
+    #expect(manager.commitMarkedText(inputState: .previewing) == marked.joined())
+}
+
+@MainActor
+@Test func shrinkingRangePreservesAnUnchangedLaterSelection() throws {
+    let manager = makeSegmentsManager(liveConversion: true)
+    manager.insertAtCursorPosition("きょうはとうきょう", inputStyle: .direct)
+    manager.editSegment(count: -5)
+    _ = manager.getCurrentMarkedText(inputState: .selecting)
+    manager.moveConversionSegment(1)
+
+    guard case let .selecting(candidates, _) = manager.getCurrentCandidateWindow(inputState: .selecting) else {
+        Issue.record("Expected candidates for the second segment")
+        return
+    }
+    let index = try #require(candidates.indices.first { candidates[$0].text == "トウキョウ" })
+    manager.requestSelectingRow(index)
+    manager.moveConversionSegment(-1)
+    manager.editSegment(count: -1)
+
+    let marked = manager.getCurrentMarkedText(inputState: .selecting).map(\.content)
+    #expect(marked.last?.hasSuffix("トウキョウ") == true)
+    manager.retainVisibleConversion()
+    #expect(manager.commitMarkedText(inputState: .previewing) == marked.joined())
 }
 
 @MainActor
