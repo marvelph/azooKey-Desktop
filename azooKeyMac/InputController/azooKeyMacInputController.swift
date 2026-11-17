@@ -444,8 +444,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: false)
             self.segmentsManager.requestSetCandidateWindowState(visible: false)
         case .enterCandidateSelectionMode:
-            self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: true)
-            self.segmentsManager.update(requestRichCandidates: true)
+            if !self.segmentsManager.reopenConversionSegmentIfNeeded() {
+                self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: true)
+                self.segmentsManager.update(requestRichCandidates: true)
+            }
         case .appendToMarkedText(let string):
             // 英語モードの場合は.directでローマ字変換せずそのまま入力
             let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
@@ -453,7 +455,12 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         case .appendPieceToMarkedText(let pieces):
             // 英語モードの場合は.directでローマ字変換せずそのまま入力
             let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
-            self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
+            if self.inputState == .previewing {
+                self.segmentsManager.retainConversionPreview()
+                self.segmentsManager.appendAfterRetainedConversion(pieces, inputStyle: inputStyle)
+            } else {
+                self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
+            }
         case .appendDirectlyToMarkedText(let string, let showReading):
             self.segmentsManager.insertAtCursorPosition(string, inputStyle: .direct, showReading: showReading)
         case .insertWithoutMarkedText(let string):
@@ -473,14 +480,14 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             // 英語モードの場合は.directでローマ字変換せずそのまま入力
             let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
             self.segmentsManager.insertAtCursorPosition(string, inputStyle: inputStyle)
-        case .commitMarkedTextAndAppendPieceToMarkedText(let pieces):
-            let text = self.segmentsManager.commitMarkedText(inputState: self.inputState)
-            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-            // 英語モードの場合は.directでローマ字変換せずそのまま入力
-            let inputStyle: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
-            self.segmentsManager.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
-        case .submitSelectedCandidate:
-            self.submitSelectedCandidate()
+        case .retainSelectedCandidate:
+            self.segmentsManager.retainVisibleConversion()
+        case .moveConversionSegment(let direction):
+            self.segmentsManager.moveConversionSegment(direction)
+        case .retainSelectedCandidateAndAppend(let pieces):
+            self.segmentsManager.retainVisibleConversion()
+            let style: InputStyle = self.inputLanguage == .english ? .direct : self.inputStyle
+            self.segmentsManager.appendAfterRetainedConversion(pieces, inputStyle: style)
         case .removeLastMarkedText:
             self.segmentsManager.deleteBackwardFromCursorPosition()
             self.segmentsManager.requestResettingSelection()
@@ -490,8 +497,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             self.segmentsManager.requestSelectingNextCandidate()
         case .selectNumberCandidate(let num):
             self.segmentsManager.requestSelectingRow(self.candidatesViewController.getNumberCandidate(num: num))
-            self.submitSelectedCandidate()
-            self.segmentsManager.requestResettingSelection()
+            self.segmentsManager.retainVisibleConversion()
         case .submitHiraganaCandidate:
             self.submitCandidate(self.modifiedCandidate(for: .six))
         case .submitKatakanaCandidate:
@@ -882,9 +888,12 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             at: NSRange(location: NSNotFound, length: 0)
         ) as? [NSAttributedString.Key: Any]
         if let preview = self.conversionPreview {
+            let retained = self.segmentsManager.retainedConversionText
+            let text = NSMutableAttributedString(string: retained, attributes: underline)
+            text.append(NSAttributedString(string: preview.text, attributes: highlight))
             self.client()?.setMarkedText(
-                NSAttributedString(string: preview.text, attributes: highlight),
-                selectionRange: NSRange(location: 0, length: preview.text.utf16.count),
+                text,
+                selectionRange: NSRange(location: retained.utf16.count, length: preview.text.utf16.count),
                 replacementRange: NSRange(location: NSNotFound, length: 0)
             )
             return
@@ -945,8 +954,9 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     private func submitCandidate(_ candidate: Candidate, to client: IMKTextInput) {
         self.reconversionOriginal = nil
         let cleanLeftSideContext = self.segmentsManager.getCleanLeftSideContext(maxCount: 30)
-        client.insertText(candidate.text, replacementRange: NSRange(location: NSNotFound, length: 0))
-        self.segmentsManager.prefixCandidateCommited(candidate, leftSideContext: cleanLeftSideContext ?? "")
+        let retained = self.segmentsManager.commitRetainedConversion()
+        client.insertText(retained + candidate.text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        self.segmentsManager.prefixCandidateCommited(candidate, leftSideContext: (cleanLeftSideContext ?? "") + retained)
     }
 
     @MainActor
@@ -961,7 +971,8 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 extension azooKeyMacInputController: CandidatesViewControllerDelegate {
     func candidateSubmitted() {
         Task { @MainActor in
-            self.submitSelectedCandidate()
+            guard self.inputState == .selecting, let client = self.client() else { return }
+            _ = self.handleClientAction(.retainSelectedCandidate, clientActionCallback: .transition(.previewing), client: client)
         }
     }
 

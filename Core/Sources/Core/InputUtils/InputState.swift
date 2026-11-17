@@ -207,14 +207,14 @@ public enum InputState: Sendable, Hashable {
         case .previewing:
             switch userAction {
             case .input(let string):
-                return (.commitMarkedTextAndAppendPieceToMarkedText(string), .transition(.composing))
+                return (.appendPieceToMarkedText(string), .transition(.composing))
             case .number(let number):
-                return (.commitMarkedTextAndAppendPieceToMarkedText([number.inputPiece]), .transition(.composing))
+                return (.appendPieceToMarkedText([number.inputPiece]), .transition(.composing))
             case .backspace:
                 if event.modifierFlags.contains(.option) {
                     return (.consume, .fallthrough)
                 } else {
-                    return (.removeLastMarkedText, .transition(.composing))
+                    return (.removeLastMarkedText, .basedOnBackspace(ifIsEmpty: .none, ifIsNotEmpty: .composing))
                 }
             case .enter:
                 return (.commitMarkedText, .transition(.none))
@@ -268,10 +268,9 @@ public enum InputState: Sendable, Hashable {
                 } else if s == "D" && enableDebugWindow {
                     return (.disableDebugWindow, .fallthrough)
                 }
-                // FIXME: ここの動作はmacOSの標準と異なる。具体的には、macOSの標準ではselectingをcomposingに戻して入力を継続する動きになる。
-                return (.commitMarkedTextAndAppendPieceToMarkedText(string), .transition(.composing))
+                return (.retainSelectedCandidateAndAppend(string), .transition(.composing))
             case .enter:
-                return (.submitSelectedCandidate, .basedOnSubmitCandidate(ifIsEmpty: .none, ifIsNotEmpty: .previewing))
+                return (.retainSelectedCandidate, .transition(.previewing))
             case .backspace:
                 if event.modifierFlags.contains(.option) {
                     return (.consume, .fallthrough)
@@ -296,10 +295,12 @@ public enum InputState: Sendable, Hashable {
                     if event.modifierFlags.contains(.shift) {
                         return (.editSegment(1), .fallthrough)
                     } else {
-                        return (.submitSelectedCandidate, .basedOnSubmitCandidate(ifIsEmpty: .none, ifIsNotEmpty: .selecting))
+                        return (.moveConversionSegment(1), .fallthrough)
                     }
-                } else if direction == .left && event.modifierFlags.contains(.shift) {
-                    return (.editSegment(-1), .fallthrough)
+                } else if direction == .left {
+                    return event.modifierFlags.contains(.shift)
+                        ? (.editSegment(-1), .fallthrough)
+                        : (.moveConversionSegment(-1), .fallthrough)
                 } else if direction == .down {
                     return (.selectNextCandidate, .fallthrough)
                 } else if direction == .up {
@@ -323,9 +324,9 @@ public enum InputState: Sendable, Hashable {
             case .number(let num):
                 switch num {
                 case .one, .two, .three, .four, .five, .six, .seven, .eight, .nine:
-                    return (.selectNumberCandidate(num.intValue), .basedOnSubmitCandidate(ifIsEmpty: .none, ifIsNotEmpty: .previewing))
+                    return (.selectNumberCandidate(num.intValue), .transition(.previewing))
                 case .zero, .shiftZero:
-                    return (.commitMarkedTextAndAppendPieceToMarkedText([num.inputPiece]), .transition(.composing))
+                    return (.retainSelectedCandidateAndAppend([num.inputPiece]), .transition(.composing))
                 }
             case .editSegment(let count):
                 return (.editSegment(count), .transition(.selecting))

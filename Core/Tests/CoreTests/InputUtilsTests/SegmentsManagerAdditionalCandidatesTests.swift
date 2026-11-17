@@ -13,6 +13,45 @@ private func makeSegmentsManager() -> SegmentsManager {
 }
 
 @MainActor
+@Test func retainedConversionSurvivesAppendingAndCommitsAsOneComposition() {
+    let manager = makeSegmentsManager()
+    manager.insertAtCursorPosition("きょうははれ", inputStyle: .direct)
+    manager.retainConversionCandidate(
+        Candidate(text: "今日は", value: 0, composingCount: .surfaceCount(4), lastMid: 0, data: [])
+    )
+    manager.appendAfterRetainedConversion([.character("で")], inputStyle: .direct)
+
+    #expect(manager.retainedConversionText == "今日は")
+    #expect(manager.convertTarget == "はれで")
+    if case .hidden = manager.getCurrentCandidateWindow(inputState: .composing) {
+        // Expected after appending.
+    } else {
+        Issue.record("Appending after candidate selection should close the candidate window")
+    }
+    let suffix = manager.getCurrentMarkedText(inputState: .composing).dropFirst().map(\.content).joined()
+    #expect(manager.commitMarkedText(inputState: .composing) == "今日は" + suffix)
+    #expect(manager.isEmpty)
+}
+
+@MainActor
+@Test func retainedConversionRestoresThePreviousSegmentWithoutDroppingTheSuffix() {
+    let manager = makeSegmentsManager()
+    manager.insertAtCursorPosition("きょうははれ", inputStyle: .direct)
+    manager.editSegment(count: -2)
+    _ = manager.getCurrentCandidateWindow(inputState: .selecting)
+    guard let candidate = manager.selectedCandidate else {
+        Issue.record("Expected a candidate for the first segment")
+        return
+    }
+    manager.retainConversionCandidate(candidate)
+    manager.moveConversionSegment(-1)
+
+    #expect(manager.retainedConversionText.isEmpty)
+    #expect(manager.convertTarget == "きょうははれ")
+    #expect(manager.selectedCandidate?.text == candidate.text)
+}
+
+@MainActor
 private func makeEditedRangeScenario() -> (manager: SegmentsManager, selectedRuby: String) {
     let manager = makeSegmentsManager()
     manager.insertAtCursorPosition("hennkann", inputStyle: .roman2kana)

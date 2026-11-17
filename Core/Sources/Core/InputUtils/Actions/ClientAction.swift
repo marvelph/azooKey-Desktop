@@ -22,7 +22,9 @@ public enum ClientAction {
 
     /// スペースを押して`.selecting`に入るコマンド
     case enterCandidateSelectionMode
-    case submitSelectedCandidate
+    case retainSelectedCandidate
+    case moveConversionSegment(Int)
+    case retainSelectedCandidateAndAppend([InputPiece])
     case selectNextCandidate
     case selectPrevCandidate
     case selectNumberCandidate(Int)
@@ -32,7 +34,6 @@ public enum ClientAction {
 
     /// MarkedTextを確定して、さらに追加で入力する
     case commitMarkedTextAndAppendToMarkedText(String)
-    case commitMarkedTextAndAppendPieceToMarkedText([InputPiece])
 
     /// デバッグウィンドウを表示するコマンド
     case enableDebugWindow

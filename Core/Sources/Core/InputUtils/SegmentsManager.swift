@@ -31,6 +31,13 @@ public final class SegmentsManager {
     private let context: Context
 
     private var composingText: ComposingText = ComposingText()
+    private struct RetainedSegment {
+        var input: ComposingText
+        var candidate: Candidate
+        var start: Int
+    }
+    private var retainedSegments: [RetainedSegment] = []
+    private var laterSelections: [Int: RetainedSegment] = [:]
     private var lastInputStyle: InputStyle = .direct
 
     private var liveConversionEnabled: Bool {
@@ -221,6 +228,8 @@ public final class SegmentsManager {
 
     @MainActor
     public func deactivate() {
+        self.retainedSegments.removeAll()
+        self.laterSelections.removeAll()
         self.kanaKanjiConverter.stopComposition()
         self.kanaKanjiConverter.commitUpdateLearningData()
         self.rawCandidates = nil
@@ -238,6 +247,8 @@ public final class SegmentsManager {
     @MainActor
     /// この入力を打ち切る
     public func stopComposition() {
+        self.retainedSegments.removeAll()
+        self.laterSelections.removeAll()
         self.composingText.stopComposition()
         self.kanaKanjiConverter.stopComposition()
         self.rawCandidates = nil
@@ -303,6 +314,7 @@ public final class SegmentsManager {
 
     @MainActor
     public func editSegment(count: Int) {
+        self.laterSelections.removeAll()
         // 現在選ばれているprefix candidateが存在する場合、まずそれに合わせてカーソルを移動する
         if let selectionIndex, let candidates, candidates.indices.contains(selectionIndex) {
             var afterComposingText = self.composingText
@@ -334,6 +346,10 @@ public final class SegmentsManager {
 
     @MainActor
     public func deleteBackwardFromCursorPosition(count: Int = 1) {
+        if self.composingText.isEmpty {
+            _ = self.restorePreviousConversionSegment()
+        }
+        self.laterSelections.removeAll()
         var previousComposingText = self.composingText.prefixToCursorPosition()
         if !self.composingText.isAtEndIndex {
             // 右端に持っていく
@@ -443,7 +459,7 @@ public final class SegmentsManager {
     }
 
     public var isEmpty: Bool {
-        self.composingText.isEmpty
+        self.composingText.isEmpty && self.retainedSegments.isEmpty
     }
 
     public func getCleanLeftSideContext(maxCount: Int) -> String? {
@@ -525,7 +541,8 @@ public final class SegmentsManager {
         self.kanaKanjiConverter.importDynamicUserDictionary(consume userDictionary, shortcuts: dynamicShortcuts)
 
         let prefixComposingText = self.composingText.prefixToCursorPosition()
-        let leftSideContext = forcedLeftSideContext ?? self.getCleanLeftSideContext(maxCount: 30)
+        let leftSideContext = forcedLeftSideContext
+            ?? ((self.getCleanLeftSideContext(maxCount: 30) ?? "") + self.retainedConversionText)
         let result = self.kanaKanjiConverter.requestCandidates(
             prefixComposingText,
             options: options(
@@ -541,6 +558,143 @@ public final class SegmentsManager {
     @MainActor public func update(requestRichCandidates: Bool) {
         self.updateRawCandidate(requestRichCandidates: requestRichCandidates)
         self.shouldShowCandidateWindow = true
+    }
+
+    public var retainedConversionText: String {
+        self.retainedSegments.map(\.candidate.text).joined()
+    }
+
+    @MainActor
+    @discardableResult
+    public func retainConversionCandidate(_ candidate: Candidate? = nil) -> Bool {
+        guard let candidate = candidate ?? self.selectedCandidate ?? self.candidates?.first else { return false }
+        var remainder = self.composingText
+        _ = remainder.moveCursorFromCursorPosition(count: remainder.convertTarget.count)
+        remainder.prefixComplete(composingCount: candidate.composingCount)
+        let length = self.composingText.convertTarget.count - remainder.convertTarget.count
+        guard length > 0 else { return false }
+        var prefix = self.composingText
+        _ = prefix.moveCursorFromCursorPosition(count: length - prefix.convertTargetCursorPosition)
+        let start = self.retainedSegments.reduce(0) { $0 + $1.input.convertTarget.count }
+        self.retainedSegments.append(.init(input: prefix.prefixToCursorPosition(), candidate: candidate, start: start))
+        self.composingText = remainder
+        self.requestResettingSelection()
+        self.rawCandidates = nil
+        self.didExperienceSegmentEdition = false
+        return true
+    }
+
+    @MainActor
+    public func retainVisibleConversion() {
+        self.retainConversionCandidate()
+        let start = self.retainedSegments.reduce(0) { $0 + $1.input.convertTarget.count }
+        for segment in self.matchingLaterSelections(in: self.composingText, startingAt: start, index: self.retainedSegments.count) {
+            self.retainConversionCandidate(segment.candidate)
+        }
+        self.laterSelections.removeAll()
+    }
+
+    private var wholePreviewCandidate: Candidate? {
+        guard let candidate = self.rawCandidates?.mainResults.first,
+              self.composingText.isWholeComposingText(composingCount: candidate.composingCount) else {
+            return nil
+        }
+        return candidate
+    }
+
+    @MainActor
+    public func retainConversionPreview() {
+        if let candidate = self.wholePreviewCandidate {
+            self.retainConversionCandidate(candidate)
+        }
+    }
+
+    private func matchingLaterSelections(in text: ComposingText, startingAt start: Int, index: Int) -> [RetainedSegment] {
+        var remaining = text.convertTarget[...]
+        var offset = start
+        var matches: [RetainedSegment] = []
+        while let segment = self.laterSelections[index + matches.count],
+              segment.start == offset, remaining.hasPrefix(segment.input.convertTarget) {
+            let count = segment.input.convertTarget.count
+            remaining = remaining.dropFirst(count)
+            offset += count
+            matches.append(segment)
+        }
+        return matches
+    }
+
+    private func restorePreviousConversionSegment() -> Bool {
+        guard let segment = self.retainedSegments.popLast() else { return false }
+        self.composingText = ComposingText(
+            convertTargetCursorPosition: segment.input.convertTarget.count,
+            input: segment.input.input + self.composingText.input,
+            convertTarget: segment.input.convertTarget + self.composingText.convertTarget
+        )
+        self.laterSelections[self.retainedSegments.count] = segment
+        self.didExperienceSegmentEdition = true
+        return true
+    }
+
+    @MainActor
+    public func moveConversionSegment(_ direction: Int) {
+        if direction < 0 {
+            guard !self.retainedSegments.isEmpty else { return }
+            if self.retainConversionCandidate() {
+                _ = self.restorePreviousConversionSegment()
+            }
+            guard self.restorePreviousConversionSegment() else { return }
+        } else {
+            guard let candidate = self.selectedCandidate else { return }
+            var remainder = self.composingText
+            _ = remainder.moveCursorFromCursorPosition(count: remainder.convertTarget.count)
+            remainder.prefixComplete(composingCount: candidate.composingCount)
+            guard !remainder.isEmpty else { return }
+            self.retainConversionCandidate(candidate)
+            let start = self.retainedSegments.reduce(0) { $0 + $1.input.convertTarget.count }
+            if let next = self.matchingLaterSelections(in: self.composingText, startingAt: start, index: self.retainedSegments.count).first {
+                _ = self.composingText.moveCursorFromCursorPosition(
+                    count: next.input.convertTarget.count - self.composingText.convertTargetCursorPosition
+                )
+                self.didExperienceSegmentEdition = true
+            }
+        }
+        self.requestResettingSelection()
+        self.update(requestRichCandidates: true)
+        if let previous = self.laterSelections[self.retainedSegments.count] {
+            self.selectionIndex = self.candidates?.firstIndex { $0.text == previous.candidate.text }
+        }
+    }
+
+    @MainActor
+    public func reopenConversionSegmentIfNeeded() -> Bool {
+        if self.composingText.isEmpty, self.restorePreviousConversionSegment() {
+            self.update(requestRichCandidates: true)
+            if let previous = self.laterSelections[self.retainedSegments.count] {
+                self.selectionIndex = self.candidates?.firstIndex { $0.text == previous.candidate.text }
+            }
+            return true
+        }
+        return false
+    }
+
+    @MainActor
+    public func appendAfterRetainedConversion(_ pieces: [InputPiece], inputStyle: InputStyle) {
+        _ = self.composingText.moveCursorFromCursorPosition(count: self.composingText.convertTarget.count)
+        self.laterSelections.removeAll()
+        self.insertAtCursorPosition(pieces: pieces, inputStyle: inputStyle)
+        self.shouldShowCandidateWindow = false
+    }
+
+    @MainActor
+    public func commitRetainedConversion() -> String {
+        let text = self.retainedConversionText
+        for segment in self.retainedSegments {
+            self.kanaKanjiConverter.setCompletedData(segment.candidate)
+            self.kanaKanjiConverter.updateLearningData(segment.candidate)
+        }
+        self.retainedSegments.removeAll()
+        self.laterSelections.removeAll()
+        return text
     }
 
     /// - note: 画面更新との整合性を保つため、この関数の実行前に左文脈を取得し、これを引数として与える
@@ -642,7 +796,7 @@ public final class SegmentsManager {
         case .none, .previewing, .replaceSuggestion, .attachDiacritic, .unicodeInput:
             return .hidden
         case .composing:
-            if !self.liveConversionEnabled, let firstCandidate = self.rawCandidates?.mainResults.first {
+            if self.shouldShowCandidateWindow, !self.liveConversionEnabled, let firstCandidate = self.rawCandidates?.mainResults.first {
                 return .composing([firstCandidate], selectionIndex: 0)
             } else {
                 return .hidden
@@ -789,7 +943,14 @@ public final class SegmentsManager {
     public func commitMarkedText(inputState: InputState) -> String {
         let markedText = self.getCurrentMarkedText(inputState: inputState)
         let text = markedText.reduce(into: "") {$0.append(contentsOf: $1.content)}
-        if let candidate = self.candidates?.first(where: {$0.text == text}) {
+        if !self.retainedSegments.isEmpty {
+            let suffix = String(text.dropFirst(self.retainedConversionText.count))
+            _ = self.commitRetainedConversion()
+            if let finalCandidate = self.candidates?.first(where: { $0.text == suffix }) {
+                self.kanaKanjiConverter.setCompletedData(finalCandidate)
+                self.kanaKanjiConverter.updateLearningData(finalCandidate)
+            }
+        } else if let candidate = self.candidates?.first(where: {$0.text == text}) {
             self.prefixCandidateCommited(candidate, leftSideContext: "")
         }
         self.stopComposition()
@@ -1008,6 +1169,18 @@ public final class SegmentsManager {
 
     // swiftlint:disable:next cyclomatic_complexity
     public func getCurrentMarkedText(inputState: InputState) -> MarkedText {
+        var marked = self.getActiveMarkedText(inputState: inputState)
+        let retained = self.retainedConversionText
+        if !retained.isEmpty, inputState != .none {
+            marked.text.insert(.init(content: retained, focus: .unfocused), at: 0)
+            if marked.selectionRange.location != NSNotFound {
+                marked.selectionRange.location += retained.utf16.count
+            }
+        }
+        return marked
+    }
+
+    private func getActiveMarkedText(inputState: InputState) -> MarkedText {
         switch inputState {
         case .none, .attachDiacritic:
             return MarkedText(text: [], selectionRange: .notFound)
@@ -1025,8 +1198,7 @@ public final class SegmentsManager {
             }
             return MarkedText(text: [.init(content: text, focus: .none)], selectionRange: .notFound)
         case .previewing:
-            if let fullCandidate = self.rawCandidates?.mainResults.first,
-               self.composingText.isWholeComposingText(composingCount: fullCandidate.composingCount) {
+            if let fullCandidate = self.wholePreviewCandidate {
                 return MarkedText(text: [.init(content: fullCandidate.text, focus: .none)], selectionRange: .notFound)
             } else {
                 return MarkedText(text: [.init(content: self.composingText.convertTarget, focus: .none)], selectionRange: .notFound)
@@ -1035,13 +1207,19 @@ public final class SegmentsManager {
             if let candidates, !candidates.isEmpty {
                 self.selectionIndex = min(self.selectionIndex ?? 0, candidates.count - 1)
                 var afterComposingText = self.composingText
+                _ = afterComposingText.moveCursorFromCursorPosition(count: afterComposingText.convertTarget.count)
                 afterComposingText.prefixComplete(composingCount: candidates[self.selectionIndex!].composingCount)
+                let consumed = self.composingText.convertTarget.count - afterComposingText.convertTarget.count
+                let start = self.retainedSegments.reduce(consumed) { $0 + $1.input.convertTarget.count }
+                let later = self.matchingLaterSelections(in: afterComposingText, startingAt: start, index: self.retainedSegments.count + 1)
+                let laterLength = later.reduce(0) { $0 + $1.input.convertTarget.count }
+                let trailing = later.map(\.candidate.text).joined() + afterComposingText.convertTarget.dropFirst(laterLength)
                 return MarkedText(
                     text: [
                         .init(content: candidates[self.selectionIndex!].text, focus: .focused),
-                        .init(content: afterComposingText.convertTarget, focus: .unfocused)
+                        .init(content: trailing, focus: .unfocused)
                     ],
-                    selectionRange: NSRange(location: candidates[self.selectionIndex!].text.count, length: 0)
+                    selectionRange: NSRange(location: candidates[self.selectionIndex!].text.utf16.count, length: 0)
                 )
             } else {
                 return MarkedText(text: [.init(content: self.composingText.convertTarget, focus: .none)], selectionRange: .notFound)
