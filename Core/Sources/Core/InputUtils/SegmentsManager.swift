@@ -269,6 +269,30 @@ public final class SegmentsManager {
     }
 
     @MainActor
+    public func restoreReadingIfConverted(inputState: InputState, displayedText: String? = nil) -> Bool {
+        let reading = self.retainedSegments.map(\.input.convertTarget).joined() + self.composingText.convertTarget
+        let displayedText = displayedText ?? self.getCurrentMarkedText(inputState: inputState).map(\.content).joined()
+        guard !reading.isEmpty, displayedText != reading else { return false }
+
+        self.composingText = ComposingText(
+            convertTargetCursorPosition: reading.count,
+            input: self.retainedSegments.flatMap(\.input.input) + self.composingText.input,
+            convertTarget: reading
+        )
+        self.retainedSegments.removeAll()
+        self.laterSelections.removeAll()
+        self.trailingPreview = nil
+        self.rawCandidates = nil
+        self.didExperienceSegmentEdition = false
+        self.lastOperation = .insertShowingReading
+        self.shouldShowCandidateWindow = false
+        self.backspaceAdjustedPredictionCandidate = nil
+        self.backspaceTypoCorrectionLock = nil
+        self.requestResettingSelection()
+        return true
+    }
+
+    @MainActor
     /// 日本語入力自体をやめる
     public func stopJapaneseInput() {
         self.rawCandidates = nil
@@ -287,7 +311,10 @@ public final class SegmentsManager {
     @MainActor
     public func insertCompositionSeparator(inputStyle: InputStyle, skipUpdate: Bool = false) {
         guard self.composingText.input.last?.piece != .compositionSeparator else {
-            // すでに末尾がcompositionSeparatorの場合は何もしない
+            // 区切りがある場合も、候補が消去されていれば取得し直す
+            if !skipUpdate, self.rawCandidates == nil {
+                self.updateRawCandidate()
+            }
             return
         }
         self.lastInputStyle = inputStyle

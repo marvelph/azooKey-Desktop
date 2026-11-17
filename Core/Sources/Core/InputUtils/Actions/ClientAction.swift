@@ -4,7 +4,7 @@ public enum ClientAction {
     case `consume`
     case `fallthrough`
     case showCandidateWindow
-    case hideCandidateWindow
+    case restoreReadingOrCancelComposition
     case appendToMarkedText(String)
     case appendDirectlyToMarkedText(String, showReading: Bool = false)
     case appendPieceToMarkedText([InputPiece])

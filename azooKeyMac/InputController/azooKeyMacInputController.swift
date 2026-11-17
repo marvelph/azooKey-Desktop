@@ -438,8 +438,12 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         switch clientAction {
         case .showCandidateWindow:
             self.segmentsManager.requestSetCandidateWindowState(visible: true)
-        case .hideCandidateWindow:
-            self.segmentsManager.requestSetCandidateWindowState(visible: false)
+        case .restoreReadingOrCancelComposition:
+            self.hidePredictionWindow()
+            let displayedText = preview.map { self.segmentsManager.retainedConversionText + $0.text }
+            guard self.segmentsManager.restoreReadingIfConverted(inputState: self.inputState, displayedText: displayedText) else {
+                return self.handleClientAction(.stopComposition, clientActionCallback: .transition(.none), client: client)
+            }
         case .enterFirstCandidatePreviewMode:
             self.segmentsManager.insertCompositionSeparator(inputStyle: self.inputStyle, skipUpdate: false)
             self.segmentsManager.requestSetCandidateWindowState(visible: false)

@@ -146,7 +146,7 @@ public enum InputState: Sendable, Hashable {
                     return (.commitMarkedText, .transition(.none))
                 }
             case .escape:
-                return (.stopComposition, .transition(.none))
+                return (.restoreReadingOrCancelComposition, .transition(.composing))
             case .space:
                 if inputLanguage == .english {
                     return (.appendToMarkedText(" "), .fallthrough)
@@ -221,7 +221,7 @@ public enum InputState: Sendable, Hashable {
             case .space:
                 return (.enterCandidateSelectionMode, .transition(.selecting))
             case .escape:
-                return (.hideCandidateWindow, .transition(.composing))
+                return (.restoreReadingOrCancelComposition, .transition(.composing))
             case let .function(function):
                 switch function {
                 case .six:
@@ -278,11 +278,7 @@ public enum InputState: Sendable, Hashable {
                     return (.removeLastMarkedText, .basedOnBackspace(ifIsEmpty: .none, ifIsNotEmpty: .composing))
                 }
             case .escape:
-                if liveConversionEnabled {
-                    return (.hideCandidateWindow, .transition(.composing))
-                } else {
-                    return (.enterFirstCandidatePreviewMode, .transition(.previewing))
-                }
+                return (.restoreReadingOrCancelComposition, .transition(.composing))
             case .space:
                 // シフトが入っている場合は上に移動する
                 if event.modifierFlags.contains(.shift) {

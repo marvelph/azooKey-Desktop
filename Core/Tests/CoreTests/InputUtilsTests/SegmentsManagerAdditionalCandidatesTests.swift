@@ -13,6 +13,37 @@ private func makeSegmentsManager(liveConversion: Bool? = nil) -> SegmentsManager
 }
 
 @MainActor
+@Test func restoringReadingRejoinsRetainedRomanInputAndSuppressesLiveConversion() {
+    let manager = makeSegmentsManager(liveConversion: true)
+    manager.insertAtCursorPosition("kyouhatoukyou", inputStyle: .roman2kana)
+    manager.retainConversionCandidate(
+        Candidate(text: "今日は", value: 0, composingCount: .surfaceCount(4), lastMid: 0, data: [])
+    )
+
+    #expect(manager.restoreReadingIfConverted(inputState: .composing))
+    #expect(manager.retainedConversionText.isEmpty)
+    #expect(manager.getCurrentMarkedText(inputState: .composing).map(\.content).joined() == "きょうはとうきょう")
+    #expect(!manager.restoreReadingIfConverted(inputState: .composing))
+
+    manager.insertAtCursorPosition("he", inputStyle: .roman2kana)
+    #expect(manager.convertTarget == "きょうはとうきょうへ")
+}
+
+@MainActor
+@Test func restoringReadingAllowsConversionAgainWithoutLiveConversion() {
+    let manager = makeSegmentsManager(liveConversion: false)
+    manager.insertAtCursorPosition("とうきょう", inputStyle: .direct)
+    #expect(!manager.restoreReadingIfConverted(inputState: .composing))
+    manager.insertCompositionSeparator(inputStyle: .direct)
+    #expect(manager.getCurrentMarkedText(inputState: .previewing).map(\.content).joined() == "東京")
+
+    #expect(manager.restoreReadingIfConverted(inputState: .previewing))
+    #expect(manager.getCurrentMarkedText(inputState: .composing).map(\.content).joined() == "とうきょう")
+    manager.insertCompositionSeparator(inputStyle: .direct)
+    #expect(manager.getCurrentMarkedText(inputState: .previewing).map(\.content).joined() == "東京")
+}
+
+@MainActor
 @Test(arguments: [true, false])
 func resizedRangePreviewsTrailingConversionWhenLiveConversionIsEnabled(liveConversion: Bool) {
     let manager = makeSegmentsManager(liveConversion: liveConversion)
